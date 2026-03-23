@@ -492,4 +492,47 @@ impl TrustLinkContract {
 
         count
     }
+
+    /// Update the expiration of an existing attestation.
+    ///
+    /// Only the original issuer may update the expiration. The attestation must
+    /// not be revoked. The expiration can be extended, shortened, or removed
+    /// entirely by passing `None`.
+    ///
+    /// Emits an `attestation_updated` event on success.
+    ///
+    /// # Parameters
+    /// - `issuer` — the issuer who created the attestation (must authorize).
+    /// - `attestation_id` — ID of the attestation to update.
+    /// - `new_expiration` — new expiration timestamp, or `None` to remove expiration.
+    ///
+    /// # Errors
+    /// - [`Error::NotFound`] — no attestation exists with the given ID.
+    /// - [`Error::Unauthorized`] — caller is not the original issuer.
+    /// - [`Error::AlreadyRevoked`] — attestation has already been revoked.
+    pub fn update_expiration(
+        env: Env,
+        issuer: Address,
+        attestation_id: String,
+        new_expiration: Option<u64>,
+    ) -> Result<(), Error> {
+        issuer.require_auth();
+
+        let mut attestation = Storage::get_attestation(&env, &attestation_id)?;
+
+        if attestation.issuer != issuer {
+            return Err(Error::Unauthorized);
+        }
+
+        if attestation.revoked {
+            return Err(Error::AlreadyRevoked);
+        }
+
+        attestation.expiration = new_expiration;
+        Storage::set_attestation(&env, &attestation);
+
+        Events::attestation_updated(&env, &attestation_id, &issuer, new_expiration);
+
+        Ok(())
+    }
 }

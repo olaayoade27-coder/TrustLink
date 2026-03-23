@@ -609,3 +609,144 @@ fn test_valid_claim_count_excludes_expired() {
     // One expired, one still valid
     assert_eq!(client.get_valid_claim_count(&subject), 1);
 }
+
+// ── update_expiration tests ───────────────────────────────────────────────────
+
+#[test]
+fn test_update_expiration_extend() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup_batch_env(&env);
+    let subject = Address::generate(&env);
+
+    let current_time = env.ledger().timestamp();
+    let id = client.create_attestation(
+        &issuer, &subject, &String::from_str(&env, "KYC_PASSED"), &Some(current_time + 100),
+    );
+
+    // Extend expiration
+    client.update_expiration(&issuer, &id, &Some(current_time + 1000));
+
+    let attestation = client.get_attestation(&id);
+    assert_eq!(attestation.expiration, Some(current_time + 1000));
+}
+
+#[test]
+fn test_update_expiration_shorten() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup_batch_env(&env);
+    let subject = Address::generate(&env);
+
+    let current_time = env.ledger().timestamp();
+    let id = client.create_attestation(
+        &issuer, &subject, &String::from_str(&env, "KYC_PASSED"), &Some(current_time + 1000),
+    );
+
+    client.update_expiration(&issuer, &id, &Some(current_time + 50));
+
+    let attestation = client.get_attestation(&id);
+    assert_eq!(attestation.expiration, Some(current_time + 50));
+}
+
+#[test]
+fn test_update_expiration_remove() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup_batch_env(&env);
+    let subject = Address::generate(&env);
+
+    let current_time = env.ledger().timestamp();
+    let id = client.create_attestation(
+        &issuer, &subject, &String::from_str(&env, "KYC_PASSED"), &Some(current_time + 100),
+    );
+
+    // Remove expiration entirely
+    client.update_expiration(&issuer, &id, &None);
+
+    let attestation = client.get_attestation(&id);
+    assert_eq!(attestation.expiration, None);
+}
+
+#[test]
+fn test_update_expiration_status_reflects_immediately() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup_batch_env(&env);
+    let subject = Address::generate(&env);
+
+    let current_time = env.ledger().timestamp();
+    let id = client.create_attestation(
+        &issuer, &subject, &String::from_str(&env, "KYC_PASSED"), &Some(current_time + 100),
+    );
+
+    // Fast-forward past expiration — should be expired
+    env.ledger().with_mut(|li| li.timestamp = current_time + 200);
+    assert_eq!(client.get_attestation_status(&id), types::AttestationStatus::Expired);
+
+    // Extend expiration beyond current time — should be valid again
+    client.update_expiration(&issuer, &id, &Some(current_time + 500));
+    assert_eq!(client.get_attestation_status(&id), types::AttestationStatus::Valid);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_update_expiration_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, issuer, client) = setup_batch_env(&env);
+    let other_issuer = Address::generate(&env);
+    client.register_issuer(&admin, &other_issuer);
+
+    let subject = Address::generate(&env);
+    let id = client.create_attestation(
+        &issuer, &subject, &String::from_str(&env, "KYC_PASSED"), &None,
+    );
+
+    // other_issuer cannot update issuer's attestation
+    client.update_expiration(&other_issuer, &id, &Some(9999));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_update_expiration_revoked_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup_batch_env(&env);
+    let subject = Address::generate(&env);
+
+    let id = client.create_attestation(
+        &issuer, &subject, &String::from_str(&env, "KYC_PASSED"), &None,
+    );
+    client.revoke_attestation(&issuer, &id);
+
+    // Cannot update a revoked attestation
+    client.update_expiration(&issuer, &id, &Some(9999));
+}
+
+#[test]
+fn test_update_expiration_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, client) = create_test_contract(&env);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let subject = Address::generate(&env);
+
+    client.initialize(&admin);
+    client.register_issuer(&admin, &issuer);
+
+    let id = client.create_attestation(
+        &issuer, &subject, &String::from_str(&env, "KYC_PASSED"), &None,
+    );
+
+    client.update_expiration(&issuer, &id, &Some(5000));
+
+    let updated_sym = soroban_sdk::symbol_short!("updated");
+    let found = env.events().all().iter().any(|(cid, topics, _)| {
+        cid == contract_id
+            && topics.get(0).map(|v| v.shallow_eq(&updated_sym.to_val())).unwrap_or(false)
+    });
+    assert!(found, "expected an updated event to be emitted");
+}
