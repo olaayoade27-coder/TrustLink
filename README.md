@@ -13,6 +13,7 @@ TrustLink solves the problem of decentralized identity verification and trust es
 - **Flexible Claims**: Support for any claim type (KYC_PASSED, ACCREDITED_INVESTOR, MERCHANT_VERIFIED, etc.)
 - **Expiration Support**: Optional time-based expiration for attestations
 - **Historical Import**: Admin can import externally verified attestations with original timestamps
+- **Configurable Fees**: Admin can require a token-denominated fee for native attestation creation
 - **Revocation**: Issuers can revoke attestations at any time
 - **Deterministic IDs**: Attestations have unique, reproducible identifiers
 - **Event Emission**: All state changes emit events for off-chain indexing
@@ -52,6 +53,7 @@ src/
 
 **Storage Keys:**
 - `Admin`: Contract administrator address
+- `FeeConfig`: Global attestation fee settings
 - `Issuer(Address)`: Authorized issuer registry
 - `Attestation(String)`: Individual attestation data
 - `SubjectAttestations(Address)`: Index of attestations per subject
@@ -66,6 +68,30 @@ src/
 ```rust
 // Deploy and initialize with admin
 contract.initialize(&admin_address);
+```
+
+### Configure Attestation Fees
+
+Fees are disabled by default. When enabled, `create_attestation` transfers the
+configured amount from the issuer to the configured collector before the
+attestation is stored.
+
+The contract stores an explicit `fee_token` because Soroban fee collection must
+transfer a concrete token contract rather than an abstract currency amount.
+
+```rust
+let fee_token = token_contract_address;
+
+contract.set_fee(
+    &admin,
+    &25,
+    &collector_address,
+    &Some(fee_token),
+);
+
+let fee_config = contract.get_fee_config();
+assert_eq!(fee_config.attestation_fee, 25);
+assert_eq!(fee_config.fee_collector, collector_address);
 ```
 
 ### Register Issuers
@@ -106,6 +132,9 @@ let page1 = contract.list_claim_types(&0, &10);
 ```
 
 ### Create Attestations
+
+If fees are enabled, the issuer must hold enough of the configured token for
+the transfer to succeed.
 
 ```rust
 // Issuer creates a KYC attestation

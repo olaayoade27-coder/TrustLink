@@ -14,7 +14,7 @@ Soroban provides two persistent storage tiers. TrustLink uses both:
 
 | Tier           | Used for                        | TTL behaviour                                      |
 |----------------|---------------------------------|----------------------------------------------------|
-| **Instance**   | `Admin`, `Version`              | Single shared TTL; refreshed to 30 days on every admin write |
+| **Instance**   | `Admin`, `Version`, `FeeConfig` | Single shared TTL; refreshed to 30 days on every admin write |
 | **Persistent** | All other keys (see table below)| Per-key TTL; refreshed to 30 days on every write of that key |
 
 30 days is calculated as `17 280 ledgers/day × 30 = 518 400 ledgers`
@@ -82,7 +82,36 @@ String   // e.g. "1.0.0"
 
 ---
 
-### 3. `Issuer(Address)`
+### 3. `FeeConfig`
+
+| Property      | Value                          |
+|---------------|--------------------------------|
+| Tier          | Instance                       |
+| TTL           | Shared instance TTL, 30 days, refreshed on every `set_fee_config` call |
+| Value type    | `FeeConfig`                    |
+| Written by    | `initialize`, `set_fee`        |
+| Read by       | `get_fee_config`, `create_attestation` |
+
+Stores the global fee policy for native attestation creation. The fee is
+disabled by default by storing `attestation_fee = 0`, `fee_collector = admin`,
+and `fee_token = None` during `initialize`.
+
+When `attestation_fee > 0`, `create_attestation` transfers that amount of the
+configured `fee_token` from the issuer to `fee_collector` before persisting the
+attestation.
+
+**Rust type:**
+```rust
+pub struct FeeConfig {
+    pub attestation_fee: i128,      // amount charged on create_attestation
+    pub fee_collector: Address,     // recipient of collected fees
+    pub fee_token: Option<Address>, // token contract used for collection
+}
+```
+
+---
+
+### 4. `Issuer(Address)`
 
 | Property      | Value                                              |
 |---------------|----------------------------------------------------|
@@ -105,7 +134,7 @@ bool   // always true
 
 ---
 
-### 4. `Attestation(String)`
+### 5. `Attestation(String)`
 
 | Property      | Value                                                    |
 |---------------|----------------------------------------------------------|
@@ -148,7 +177,7 @@ Priority order: `Pending` > `Revoked` > `Expired` > `Valid`.
 
 ---
 
-### 5. `SubjectAttestations(Address)`
+### 6. `SubjectAttestations(Address)`
 
 | Property      | Value                                                        |
 |---------------|--------------------------------------------------------------|
@@ -170,7 +199,7 @@ Vec<String>   // ordered list of 32-char hex attestation IDs
 
 ---
 
-### 6. `IssuerAttestations(Address)`
+### 7. `IssuerAttestations(Address)`
 
 | Property      | Value                                                       |
 |---------------|-------------------------------------------------------------|
@@ -191,7 +220,7 @@ Vec<String>   // ordered list of 32-char hex attestation IDs
 
 ---
 
-### 7. `IssuerMetadata(Address)`
+### 8. `IssuerMetadata(Address)`
 
 | Property      | Value                                                    |
 |---------------|----------------------------------------------------------|
@@ -216,7 +245,7 @@ pub struct IssuerMetadata {
 
 ---
 
-### 8. `ClaimType(String)`
+### 9. `ClaimType(String)`
 
 | Property      | Value                                                  |
 |---------------|--------------------------------------------------------|
@@ -241,7 +270,7 @@ pub struct ClaimTypeInfo {
 
 ---
 
-### 9. `ClaimTypeList`
+### 10. `ClaimTypeList`
 
 | Property      | Value                                                      |
 |---------------|------------------------------------------------------------|

@@ -8,12 +8,13 @@ mod validation;
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Env, String, Vec};
 
 use crate::events::Events;
 use crate::storage::Storage;
 use crate::types::{
-    Attestation, AttestationStatus, ClaimTypeInfo, ContractMetadata, Error, IssuerMetadata,
+    Attestation, AttestationStatus, ClaimTypeInfo, ContractMetadata, Error, FeeConfig,
+    IssuerMetadata,
 };
 use crate::validation::Validation;
 
@@ -53,6 +54,51 @@ fn validate_import_timestamps(
     Ok(())
 }
 
+fn validate_fee_config(fee: i128, fee_token: &Option<Address>) -> Result<(), Error> {
+    if fee < 0 {
+        return Err(Error::InvalidFee);
+    }
+
+    if fee > 0 && fee_token.is_none() {
+        return Err(Error::FeeTokenRequired);
+    }
+
+    Ok(())
+}
+
+fn default_fee_config(admin: &Address) -> FeeConfig {
+    FeeConfig {
+        attestation_fee: 0,
+        fee_collector: admin.clone(),
+        fee_token: None,
+    }
+}
+
+fn load_fee_config(env: &Env) -> Result<FeeConfig, Error> {
+    Storage::get_fee_config(env).ok_or(Error::NotInitialized)
+}
+
+fn charge_attestation_fee(env: &Env, issuer: &Address) -> Result<(), Error> {
+    let fee_config = load_fee_config(env)?;
+
+    if fee_config.attestation_fee < 0 {
+        return Err(Error::InvalidFee);
+    }
+
+    if fee_config.attestation_fee == 0 {
+        return Ok(());
+    }
+
+    let fee_token = fee_config.fee_token.ok_or(Error::FeeTokenRequired)?;
+    TokenClient::new(env, &fee_token).transfer(
+        issuer,
+        &fee_config.fee_collector,
+        &fee_config.attestation_fee,
+    );
+
+    Ok(())
+}
+
 fn store_attestation(env: &Env, attestation: &Attestation) {
     Storage::set_attestation(env, attestation);
     Storage::add_subject_attestation(env, &attestation.subject, &attestation.id);
@@ -86,6 +132,7 @@ impl TrustLinkContract {
         admin.require_auth();
         Storage::set_admin(&env, &admin);
         Storage::set_version(&env, &String::from_str(&env, "1.0.0"));
+        Storage::set_fee_config(&env, &default_fee_config(&admin));
         Events::admin_initialized(&env, &admin, env.ledger().timestamp());
         Ok(())
     }
@@ -103,6 +150,29 @@ impl TrustLinkContract {
         Validation::require_admin(&env, &admin)?;
         Storage::remove_issuer(&env, &issuer);
         Events::issuer_removed(&env, &issuer, &admin);
+        Ok(())
+    }
+
+    pub fn set_fee(
+        env: Env,
+        admin: Address,
+        fee: i128,
+        collector: Address,
+        fee_token: Option<Address>,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        Validation::require_admin(&env, &admin)?;
+        validate_fee_config(fee, &fee_token)?;
+
+        Storage::set_fee_config(
+            &env,
+            &FeeConfig {
+                attestation_fee: fee,
+                fee_collector: collector,
+                fee_token,
+            },
+        );
+
         Ok(())
     }
 
@@ -126,6 +196,8 @@ impl TrustLinkContract {
         if Storage::has_attestation(&env, &attestation_id) {
             return Err(Error::DuplicateAttestation);
         }
+
+        charge_attestation_fee(&env, &issuer)?;
 
         let attestation = Attestation {
             id: attestation_id.clone(),
@@ -515,6 +587,10 @@ impl TrustLinkContract {
 
     pub fn get_admin(env: Env) -> Result<Address, Error> {
         Storage::get_admin(&env)
+    }
+
+    pub fn get_fee_config(env: Env) -> Result<FeeConfig, Error> {
+        load_fee_config(&env)
     }
 
     pub fn register_claim_type(

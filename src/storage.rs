@@ -7,7 +7,7 @@
 //!
 //! | Tier         | Keys stored                          | TTL policy                        |
 //! |--------------|--------------------------------------|-----------------------------------|
-//! | Instance     | `Admin`, `Version`                   | Refreshed to 30 days on each write|
+//! | Instance     | `Admin`, `Version`, `FeeConfig`      | Refreshed to 30 days on each write|
 //! | Persistent   | Everything else (see [`StorageKey`]) | Refreshed to 30 days on each write|
 //!
 //! ## Key layout (`StorageKey`)
@@ -24,8 +24,9 @@
 //! - `ClaimType(String)` — [`ClaimTypeInfo`] record for a registered claim type.
 //! - `ClaimTypeList` — ordered `Vec<String>` of all registered claim type IDs;
 //!   used for pagination via `list_claim_types`.
+//! - `FeeConfig` — global attestation fee settings.
 
-use crate::types::{Attestation, ClaimTypeInfo, Error, IssuerMetadata};
+use crate::types::{Attestation, ClaimTypeInfo, Error, FeeConfig, IssuerMetadata};
 use soroban_sdk::{contracttype, Address, Env, String, Vec};
 
 /// Keys used to address data in contract storage.
@@ -35,6 +36,8 @@ pub enum StorageKey {
     Admin,
     /// Semver version string set at initialization.
     Version,
+    /// Global attestation fee settings.
+    FeeConfig,
     /// Presence flag for a registered issuer.
     Issuer(Address),
     /// Full [`Attestation`] record keyed by its ID.
@@ -79,11 +82,26 @@ impl Storage {
         env.storage().instance().set(&StorageKey::Version, version);
     }
 
+    /// Persist the attestation fee configuration.
+    pub fn set_fee_config(env: &Env, fee_config: &FeeConfig) {
+        env.storage()
+            .instance()
+            .set(&StorageKey::FeeConfig, fee_config);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+    }
+
     /// Retrieve the contract version string.
     ///
     /// Returns `None` if the contract has not been initialized yet.
     pub fn get_version(env: &Env) -> Option<String> {
         env.storage().instance().get(&StorageKey::Version)
+    }
+
+    /// Retrieve the current attestation fee configuration.
+    pub fn get_fee_config(env: &Env) -> Option<FeeConfig> {
+        env.storage().instance().get(&StorageKey::FeeConfig)
     }
 
     /// Retrieve the admin address.

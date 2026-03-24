@@ -3,6 +3,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
+    token::{StellarAssetClient, TokenClient},
     Address, Env, String,
 };
 
@@ -19,6 +20,11 @@ fn setup(env: &Env) -> (Address, Address, TrustLinkContractClient<'_>) {
     client.initialize(&admin);
     client.register_issuer(&admin, &issuer);
     (admin, issuer, client)
+}
+
+fn register_test_token(env: &Env, admin: &Address) -> Address {
+    env.register_stellar_asset_contract_v2(admin.clone())
+        .address()
 }
 
 #[test]
@@ -46,6 +52,24 @@ fn test_register_and_remove_issuer() {
 }
 
 #[test]
+fn test_fee_is_disabled_by_default() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    let fee_config = client.get_fee_config();
+    assert_eq!(fee_config.attestation_fee, 0);
+    assert_eq!(fee_config.fee_collector, admin);
+    assert_eq!(fee_config.fee_token, None);
+
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None);
+    assert!(!client.get_attestation(&id).imported);
+}
+
+#[test]
 fn test_create_attestation_sets_imported_false() {
     let env = Env::default();
     env.mock_all_auths();
@@ -63,6 +87,67 @@ fn test_create_attestation_sets_imported_false() {
     assert_eq!(attestation.metadata, metadata);
     assert!(!attestation.imported);
     assert_eq!(attestation.valid_from, None);
+}
+
+#[test]
+fn test_admin_can_update_fee_and_collector() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = setup(&env);
+    let collector = Address::generate(&env);
+    let fee_token = register_test_token(&env, &admin);
+
+    client.set_fee(&admin, &25, &collector, &Some(fee_token.clone()));
+
+    let fee_config = client.get_fee_config();
+    assert_eq!(fee_config.attestation_fee, 25);
+    assert_eq!(fee_config.fee_collector, collector);
+    assert_eq!(fee_config.fee_token, Some(fee_token));
+}
+
+#[test]
+fn test_create_attestation_collects_fee_when_enabled() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+
+    let (admin, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let collector = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+    let fee_token = register_test_token(&env, &admin);
+    let token_client = TokenClient::new(&env, &fee_token);
+    let asset_admin = StellarAssetClient::new(&env, &fee_token);
+
+    asset_admin.mint(&issuer, &100);
+    client.set_fee(&admin, &25, &collector, &Some(fee_token.clone()));
+
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None);
+
+    assert_eq!(token_client.balance(&issuer), 75);
+    assert_eq!(token_client.balance(&collector), 25);
+    assert_eq!(client.get_attestation(&id).issuer, issuer);
+}
+
+#[test]
+fn test_create_attestation_rejects_without_fee_payment() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+
+    let (admin, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let collector = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+    let fee_token = register_test_token(&env, &admin);
+    let token_client = TokenClient::new(&env, &fee_token);
+
+    client.set_fee(&admin, &25, &collector, &Some(fee_token));
+
+    let result = client.try_create_attestation(&issuer, &subject, &claim_type, &None, &None);
+
+    assert!(result.is_err());
+    assert_eq!(token_client.balance(&collector), 0);
+    assert_eq!(client.get_subject_attestations(&subject, &0, &10).len(), 0);
 }
 
 #[test]

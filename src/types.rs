@@ -27,6 +27,14 @@ pub struct IssuerMetadata {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeConfig {
+    pub attestation_fee: i128,
+    pub fee_collector: Address,
+    pub fee_token: Option<Address>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Attestation {
     pub id: String,
     pub issuer: Address,
@@ -63,6 +71,8 @@ pub enum Error {
     InvalidExpiration = 9,
     MetadataTooLong = 10,
     InvalidTimestamp = 11,
+    InvalidFee = 12,
+    FeeTokenRequired = 13,
 }
 
 impl Attestation {
