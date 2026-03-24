@@ -185,6 +185,7 @@ impl Storage {
             .get(&StorageKey::IssuerMetadata(issuer.clone()))
     }
 
+    /// Persist a [`ClaimTypeInfo`] and add its identifier to the ordered list.
     /// Persist a claim type info record and add it to the ordered list if new.
     pub fn set_claim_type(env: &Env, info: &ClaimTypeInfo) {
         let key = StorageKey::ClaimType(info.claim_type.clone());
@@ -203,6 +204,7 @@ impl Storage {
         }
     }
 
+    /// Retrieve a [`ClaimTypeInfo`] by identifier, or `None` if not registered
     /// Retrieve a claim type info record, or `None` if not registered.
     pub fn get_claim_type(env: &Env, claim_type: &String) -> Option<ClaimTypeInfo> {
         env.storage()

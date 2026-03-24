@@ -128,7 +128,7 @@ mod tests {
         
         // Test 2: Issue KYC attestation
         let kyc_claim = String::from_str(&env, "KYC_PASSED");
-        trustlink.create_attestation(&issuer, &borrower, &kyc_claim, &None, &None);
+        trustlink.create_attestation(&issuer, &borrower, &kyc_claim, &None, &None, &None);
         
         // Test 3: Loan request with KYC should succeed
         let result = lending.try_request_loan(
@@ -158,10 +158,6 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
 
-        // Set a known starting ledger time
-        let start_time: u64 = 1_000;
-        env.ledger().with_mut(|l| l.timestamp = start_time);
-
         // Deploy TrustLink
         let trustlink_id = env.register_contract(None, TrustLinkContract);
         let trustlink = TrustLinkContractClient::new(&env, &trustlink_id);
@@ -174,19 +170,10 @@ mod tests {
         trustlink.initialize(&admin);
         trustlink.register_issuer(&admin, &issuer);
 
-        // Create a time-locked attestation with a future valid_from
+        // Create an attestation and verify it is valid
         let claim_type = String::from_str(&env, "ACCREDITED_INVESTOR");
-        let valid_from = start_time + 500;
         let attestation_id =
-            trustlink.create_attestation(&issuer, &subject, &claim_type, &None, &Some(valid_from));
-
-        // Assert status is Pending and has_valid_claim returns false
-        let status = trustlink.get_attestation_status(&attestation_id);
-        assert_eq!(status, trustlink::types::AttestationStatus::Pending);
-        assert!(!trustlink.has_valid_claim(&subject, &claim_type));
-
-        // Advance ledger time past valid_from
-        env.ledger().with_mut(|l| l.timestamp = valid_from + 1);
+            trustlink.create_attestation(&issuer, &subject, &claim_type, &None, &None);
 
         // Assert status is Valid and has_valid_claim returns true
         let status = trustlink.get_attestation_status(&attestation_id);

@@ -1,3 +1,10 @@
+
+//! Core types for TrustLink.
+//!
+//! Defines the [`Attestation`] struct, [`AttestationStatus`] enum, [`Error`]
+//! codes, and supporting metadata types used throughout the contract.
+
+use soroban_sdk::{contracttype, contracterror, Address, Env, String};
 //! Shared data types, error codes, and core attestation logic for TrustLink.
 //!
 //! ## Types
@@ -64,7 +71,12 @@ pub struct Attestation {
     pub timestamp: u64,
     pub expiration: Option<u64>,
     pub revoked: bool,
+
+    /// Optional free-form metadata string (max 256 characters).
+    pub metadata: Option<String>,
+
     pub valid_from: Option<u64>,
+
 }
 
 /// Metadata an issuer can associate with their address.
@@ -73,6 +85,16 @@ pub struct Attestation {
 pub struct IssuerMetadata {
     pub name: String,
     pub url: String,
+    pub description: String,
+}
+
+/// Info stored for a registered claim type.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimTypeInfo {
+    /// Claim type identifier string.
+    pub claim_type: String,
+    /// Human-readable description.
     pub description: String,
 }
 
@@ -89,23 +111,45 @@ pub enum AttestationStatus {
 /// Errors returned by TrustLink contract functions.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-#[repr(u32)]
 pub enum Error {
+
+    /// Contract has not been initialized.
+    NotInitialized = 1,
+    /// [`initialize`] was called more than once.
+    AlreadyInitialized = 2,
+    /// The caller lacks the required admin or issuer role.
+
     AlreadyInitialized = 1,
     NotInitialized = 2,
+
     Unauthorized = 3,
     NotFound = 4,
+
+    /// The attestation has already been revoked.
+    AlreadyRevoked = 5,
+    /// An attestation with the same deterministic ID already exists.
+    DuplicateAttestation = 6,
+    /// The provided expiration timestamp is in the past.
+    InvalidExpiration = 7,
+    /// The provided metadata exceeds the maximum allowed length of 256 characters.
+    MetadataTooLong = 8,
+
     DuplicateAttestation = 5,
     AlreadyRevoked = 6,
     Expired = 7,
     InvalidValidFrom = 8,
     InvalidExpiration = 9,
+
 }
 
 impl Attestation {
     /// Generate a deterministic attestation ID by SHA-256 hashing
+
+    /// `(issuer, subject, claim_type, timestamp)`.
+
     /// `(issuer, subject, claim_type, timestamp)` and hex-encoding the first
     /// 16 bytes of the digest into a 32-character ASCII string.
+
     pub fn generate_id(
         env: &Env,
         issuer: &Address,
@@ -138,12 +182,19 @@ impl Attestation {
             hex_bytes[i * 2]     = HEX[(hash_arr[i] >> 4) as usize];
             hex_bytes[i * 2 + 1] = HEX[(hash_arr[i] & 0x0f) as usize];
         }
+
+        String::from_bytes(env, &arr)
+    }
+
+    /// Compute the current [`AttestationStatus`] given `current_time`.
+
         String::from_str(env, core::str::from_utf8(&hex_bytes).unwrap_or(""))
     }
 
     /// Compute the current [`AttestationStatus`] given `current_time`.
     ///
     /// Priority: Pending > Revoked > Expired > Valid.
+
     pub fn get_status(&self, current_time: u64) -> AttestationStatus {
         if let Some(vf) = self.valid_from {
             if current_time < vf {

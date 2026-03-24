@@ -28,6 +28,18 @@ use crate::types::Attestation;
 pub struct Events;
 
 impl Events {
+    /// Emit an event when a new attestation is created.
+    ///
+    /// # Event schema
+    /// ```text
+    /// topics: ("created", subject: Address)
+    /// data:   (attestation_id: String, issuer: Address, claim_type: String, timestamp: u64, metadata: Option<String>)
+    /// ```
+    ///
+    /// # Parameters
+    /// - `attestation` — the newly created attestation.
+
+
     pub fn attestation_created(env: &Env, attestation: &Attestation) {
         env.events().publish(
             (symbol_short!("created"), attestation.subject.clone()),
@@ -36,6 +48,7 @@ impl Events {
                 attestation.issuer.clone(),
                 attestation.claim_type.clone(),
                 attestation.timestamp,
+                attestation.metadata.clone(),
             ),
         );
     }
@@ -47,12 +60,30 @@ impl Events {
         );
     }
 
+    /// Emit event when an attestation is renewed.
+
     pub fn attestation_renewed(env: &Env, attestation_id: &String, issuer: &Address, new_expiration: Option<u64>) {
         env.events().publish(
             (symbol_short!("renewed"), issuer.clone()),
             (attestation_id.clone(), new_expiration),
         );
     }
+
+
+    /// Emit an event when an expired attestation is encountered during a check.
+    ///
+    /// This event is **not** emitted for revoked attestations; revocation takes
+    /// precedence over expiration in [`crate::types::Attestation::get_status`].
+    ///
+    /// # Event schema
+    /// ```text
+    /// topics: ("expired", subject: Address)
+    /// data:   attestation_id: String
+    /// ```
+    ///
+    /// # Parameters
+    /// - `attestation_id` — ID of the expired attestation.
+    /// - `subject` — address the attestation was issued about.
 
     pub fn attestation_expired(env: &Env, attestation_id: &String, subject: &Address) {
         env.events().publish(
