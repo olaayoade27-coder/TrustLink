@@ -1109,3 +1109,57 @@ fn test_transfer_admin_not_initialized() {
     let result = client.try_transfer_admin(&admin, &new_admin);
     assert_eq!(result, Err(Ok(types::Error::NotInitialized)));
 }
+
+// ── Contract Config Query tests ──
+
+#[test]
+fn test_get_config_uninitialized_defaults() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, client) = create_test_contract(&env);
+
+    let config = client.get_config();
+
+    assert_eq!(config.ttl_config.ttl_days, 30);
+    assert_eq!(config.fee_config.attestation_fee, 0);
+    assert_eq!(config.fee_config.fee_token, None);
+    assert_eq!(config.contract_version, String::from_str(&env, ""));
+    assert_eq!(config.contract_name, String::from_str(&env, "TrustLink"));
+    assert_eq!(
+        config.contract_description,
+        String::from_str(&env, "On-chain attestation and verification system for the Stellar blockchain.")
+    );
+}
+
+#[test]
+fn test_get_config_post_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, _issuer, client) = setup(&env);
+
+    let config = client.get_config();
+
+    assert_eq!(config.ttl_config.ttl_days, 30);
+    assert_eq!(config.fee_config.attestation_fee, 0);
+    assert_eq!(config.contract_version, String::from_str(&env, "1.0.0"));
+    assert_eq!(config.contract_name, String::from_str(&env, "TrustLink"));
+}
+
+#[test]
+fn test_get_config_consistent_with_individual_queries() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, _issuer, client) = setup(&env);
+
+    let config = client.get_config();
+    let fee_config = client.get_fee_config();
+    let metadata = client.get_contract_metadata();
+
+    assert_eq!(config.fee_config, fee_config);
+    assert_eq!(config.contract_name, metadata.name);
+    assert_eq!(config.contract_version, metadata.version);
+    assert_eq!(config.contract_description, metadata.description);
+}

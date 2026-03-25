@@ -136,6 +136,11 @@ impl Storage {
         env.storage().instance().get(&StorageKey::FeeConfig)
     }
 
+    /// Retrieve the current TTL configuration.
+    pub fn get_ttl_config(env: &Env) -> Option<TtlConfig> {
+        env.storage().instance().get(&StorageKey::TtlConfig)
+    }
+
     /// Retrieve the admin address.
     ///
     /// # Errors

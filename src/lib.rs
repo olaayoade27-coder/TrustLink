@@ -13,8 +13,9 @@ use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Bytes, En
 use crate::events::Events;
 use crate::storage::Storage;
 use crate::types::{
-    Attestation, AttestationStatus, ClaimTypeInfo, ContractMetadata, Error, FeeConfig,
-    IssuerMetadata, IssuerStats, MultiSigProposal, TtlConfig, MULTISIG_PROPOSAL_TTL_SECS,
+    Attestation, AttestationStatus, AttestationTemplate, ClaimTypeInfo, ContractConfig,
+    ContractMetadata, Error, FeeConfig, IssuerMetadata, MultiSigProposal, TtlConfig,
+    MULTISIG_PROPOSAL_TTL_SECS,
 };
 use crate::validation::Validation;
 
@@ -1229,5 +1230,31 @@ impl TrustLinkContract {
                 "On-chain attestation and verification system for the Stellar blockchain.",
             ),
         })
+    }
+
+    pub fn get_config(env: Env) -> ContractConfig {
+        let ttl_config = Storage::get_ttl_config(&env)
+            .unwrap_or(TtlConfig { ttl_days: 30 });
+
+        let fee_config = Storage::get_fee_config(&env)
+            .unwrap_or_else(|| FeeConfig {
+                attestation_fee: 0,
+                fee_collector: env.current_contract_address(),
+                fee_token: None,
+            });
+
+        let version = Storage::get_version(&env)
+            .unwrap_or_else(|| String::from_str(&env, ""));
+
+        ContractConfig {
+            ttl_config,
+            fee_config,
+            contract_name: String::from_str(&env, "TrustLink"),
+            contract_version: version,
+            contract_description: String::from_str(
+                &env,
+                "On-chain attestation and verification system for the Stellar blockchain.",
+            ),
+        }
     }
 }

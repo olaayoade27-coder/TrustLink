@@ -68,6 +68,16 @@ pub struct IssuerStats {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractConfig {
+    pub ttl_config: TtlConfig,
+    pub fee_config: FeeConfig,
+    pub contract_name: String,
+    pub contract_version: String,
+    pub contract_description: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Attestation {
     pub id: String,
     pub issuer: Address,
