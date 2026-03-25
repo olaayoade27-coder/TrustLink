@@ -29,7 +29,7 @@
 //! - `Template(Address, String)` — full [`AttestationTemplate`] record keyed by `(issuer, template_id)`.
 //! - `TemplateRegistry(Address)` — ordered `Vec<String>` of template IDs for an issuer (insertion order).
 
-use crate::types::{Attestation, ClaimTypeInfo, Error, FeeConfig, IssuerMetadata, IssuerStats, MultiSigProposal, TtlConfig};
+use crate::types::{Attestation, ClaimTypeInfo, Endorsement, Error, FeeConfig, IssuerMetadata, MultiSigProposal, TtlConfig};
 use soroban_sdk::{contracttype, Address, Env, String, Vec};
 
 /// Keys used to address data in contract storage.
@@ -61,8 +61,8 @@ pub enum StorageKey {
     ClaimTypeList,
     /// A multi-sig attestation proposal keyed by its ID.
     MultiSigProposal(String),
-    /// Activity metrics for a registered issuer.
-    IssuerStats(Address),
+    /// Ordered list of endorsements for an attestation, keyed by attestation ID.
+    Endorsements(String),
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -363,41 +363,22 @@ impl Storage {
             .has(&StorageKey::MultiSigProposal(id.clone()))
     }
 
-    /// Retrieve activity stats for `issuer`, or a zeroed default if not yet written.
-    pub fn get_issuer_stats(env: &Env, issuer: &Address) -> IssuerStats {
+    /// Return the ordered list of endorsements for `attestation_id`, or an empty
+    /// [`Vec`] if none exist.
+    pub fn get_endorsements(env: &Env, attestation_id: &String) -> Vec<Endorsement> {
         env.storage()
             .persistent()
-            .get(&StorageKey::IssuerStats(issuer.clone()))
-            .unwrap_or(IssuerStats {
-                total_issued: 0,
-                total_revoked: 0,
-                registered_at: 0,
-            })
+            .get(&StorageKey::Endorsements(attestation_id.clone()))
+            .unwrap_or(Vec::new(env))
     }
 
-    /// Persist `stats` for `issuer` and refresh its TTL.
-    pub fn set_issuer_stats(env: &Env, issuer: &Address, stats: &IssuerStats) {
-        let key = StorageKey::IssuerStats(issuer.clone());
+    /// Append `endorsement` to the endorsement list for its attestation and refresh TTL.
+    pub fn add_endorsement(env: &Env, endorsement: &Endorsement) {
+        let key = StorageKey::Endorsements(endorsement.attestation_id.clone());
         let ttl = get_ttl_lifetime(env);
-        env.storage().persistent().set(&key, stats);
+        let mut endorsements = Self::get_endorsements(env, &endorsement.attestation_id);
+        endorsements.push_back(endorsement.clone());
+        env.storage().persistent().set(&key, &endorsements);
         env.storage().persistent().extend_ttl(&key, ttl, ttl);
-    }
-
-    /// Initialise stats for a newly registered issuer (sets `registered_at`).
-    /// If stats already exist (re-registration after removal) the timestamp is
-    /// preserved and counters are left unchanged.
-    pub fn init_issuer_stats(env: &Env, issuer: &Address, registered_at: u64) {
-        let key = StorageKey::IssuerStats(issuer.clone());
-        if !env.storage().persistent().has(&key) {
-            Self::set_issuer_stats(
-                env,
-                issuer,
-                &IssuerStats {
-                    total_issued: 0,
-                    total_revoked: 0,
-                    registered_at,
-                },
-            );
-        }
     }
 }

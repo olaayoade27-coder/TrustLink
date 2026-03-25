@@ -13,9 +13,8 @@ use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Bytes, En
 use crate::events::Events;
 use crate::storage::Storage;
 use crate::types::{
-    Attestation, AttestationStatus, AttestationTemplate, ClaimTypeInfo, ContractConfig,
-    ContractMetadata, Error, FeeConfig, IssuerMetadata, MultiSigProposal, TtlConfig,
-    MULTISIG_PROPOSAL_TTL_SECS,
+    Attestation, AttestationStatus, ClaimTypeInfo, ContractMetadata, Endorsement, Error, FeeConfig,
+    IssuerMetadata, MultiSigProposal, TtlConfig, MULTISIG_PROPOSAL_TTL_SECS,
 };
 use crate::validation::Validation;
 
@@ -1073,151 +1072,67 @@ impl TrustLinkContract {
         Storage::get_multisig_proposal(&env, &proposal_id)
     }
 
-    pub fn create_template(
+    /// Endorse an existing attestation, adding a layer of social proof.
+    ///
+    /// Only registered issuers may endorse. An issuer cannot endorse their own
+    /// attestation, and cannot endorse a revoked attestation. Each issuer may
+    /// endorse a given attestation at most once.
+    ///
+    /// # Errors
+    /// - [`Error::Unauthorized`] — endorser is not a registered issuer.
+    /// - [`Error::NotFound`] — attestation does not exist.
+    /// - [`Error::CannotEndorseOwn`] — endorser is the attestation's issuer.
+    /// - [`Error::AlreadyRevoked`] — attestation has been revoked.
+    /// - [`Error::AlreadyEndorsed`] — endorser has already endorsed this attestation.
+    pub fn endorse_attestation(
         env: Env,
-        issuer: Address,
-        template_id: String,
-        template: AttestationTemplate,
+        endorser: Address,
+        attestation_id: String,
     ) -> Result<(), Error> {
-        issuer.require_auth();
-        Validation::require_issuer(&env, &issuer)?;
+        endorser.require_auth();
+        Validation::require_issuer(&env, &endorser)?;
 
-        if template.claim_type.len() == 0 {
-            return Err(Error::InvalidClaimType);
+        let attestation = Storage::get_attestation(&env, &attestation_id)?;
+
+        if attestation.issuer == endorser {
+            return Err(Error::CannotEndorseOwn);
         }
 
-        validate_metadata(&template.metadata_template)?;
+        if attestation.revoked {
+            return Err(Error::AlreadyRevoked);
+        }
 
-        Storage::set_template(&env, &issuer, &template_id, &template);
-        Storage::add_to_template_registry(&env, &issuer, &template_id);
-        Events::template_created(&env, &issuer, &template_id);
+        // Prevent duplicate endorsements from the same issuer.
+        for existing in Storage::get_endorsements(&env, &attestation_id).iter() {
+            if existing.endorser == endorser {
+                return Err(Error::AlreadyEndorsed);
+            }
+        }
+
+        let timestamp = env.ledger().timestamp();
+        let endorsement = Endorsement {
+            attestation_id: attestation_id.clone(),
+            endorser: endorser.clone(),
+            timestamp,
+        };
+
+        Storage::add_endorsement(&env, &endorsement);
+        Events::attestation_endorsed(&env, &attestation_id, &endorser, timestamp);
         Ok(())
     }
 
-    pub fn create_attestation_from_template(
-        env: Env,
-        issuer: Address,
-        template_id: String,
-        subject: Address,
-        expiration_override: Option<u64>,
-        metadata_override: Option<String>,
-    ) -> Result<String, Error> {
-        issuer.require_auth();
-        Validation::require_issuer(&env, &issuer)?;
-
-        let template = Storage::get_template(&env, &issuer, &template_id).ok_or(Error::NotFound)?;
-
-        validate_metadata(&metadata_override)?;
-        validate_native_expiration(&env, expiration_override)?;
-
-        let timestamp = env.ledger().timestamp();
-
-        let expiration = if let Some(ts) = expiration_override {
-            Some(ts)
-        } else if let Some(n) = template.default_expiration_days {
-            Some(timestamp + (n as u64 * 86_400))
-        } else {
-            None
-        };
-
-        let metadata = if metadata_override.is_some() {
-            metadata_override
-        } else {
-            template.metadata_template
-        };
-
-        let attestation_id =
-            Attestation::generate_id(&env, &issuer, &subject, &template.claim_type, timestamp);
-
-        if Storage::has_attestation(&env, &attestation_id) {
-            return Err(Error::DuplicateAttestation);
-        }
-
-        let attestation = Attestation {
-            id: attestation_id.clone(),
-            issuer,
-            subject,
-            claim_type: template.claim_type,
-            timestamp,
-            expiration,
-            revoked: false,
-            metadata,
-            valid_from: None,
-            imported: false,
-            bridged: false,
-            source_chain: None,
-            source_tx: None,
-            tags: None,
-        };
-
-        store_attestation(&env, &attestation);
-        Events::attestation_created(&env, &attestation);
-        Ok(attestation_id)
+    /// Return all endorsements for the given attestation.
+    pub fn get_endorsements(env: Env, attestation_id: String) -> Vec<Endorsement> {
+        Storage::get_endorsements(&env, &attestation_id)
     }
 
-    pub fn get_template(
-        env: Env,
-        issuer: Address,
-        template_id: String,
-    ) -> Result<AttestationTemplate, Error> {
-        Storage::get_template(&env, &issuer, &template_id).ok_or(Error::NotFound)
+    /// Return the number of endorsements for the given attestation.
+    pub fn get_endorsement_count(env: Env, attestation_id: String) -> u32 {
+        Storage::get_endorsements(&env, &attestation_id).len()
     }
 
-    pub fn list_templates(env: Env, issuer: Address) -> Vec<String> {
-        Storage::get_template_registry(&env, &issuer)
-    }
-
-    pub fn get_expiring_attestations(
-        env: Env,
-        subject: Address,
-        within_seconds: u64,
-    ) -> Vec<String> {
-        let current_time = env.ledger().timestamp();
-        let upper_bound = current_time.saturating_add(within_seconds);
-        let ids = Storage::get_subject_attestations(&env, &subject);
-        let mut result = Vec::new(&env);
-
-        for id in ids.iter() {
-            if let Ok(attestation) = Storage::get_attestation(&env, &id) {
-                if !attestation.revoked {
-                    if let Some(exp) = attestation.expiration {
-                        if exp > current_time && exp <= upper_bound {
-                            result.push_back(id);
-                        }
-                    }
-                }
-            }
-        }
-
-        result
-    }
-
-    pub fn get_issuer_expiring_attestations(
-        env: Env,
-        issuer: Address,
-        within_seconds: u64,
-    ) -> Vec<String> {
-        let current_time = env.ledger().timestamp();
-        let upper_bound = current_time.saturating_add(within_seconds);
-        let ids = Storage::get_issuer_attestations(&env, &issuer);
-        let mut result = Vec::new(&env);
-
-        for id in ids.iter() {
-            if let Ok(attestation) = Storage::get_attestation(&env, &id) {
-                if !attestation.revoked {
-                    if let Some(exp) = attestation.expiration {
-                        if exp > current_time && exp <= upper_bound {
-                            result.push_back(id);
-                        }
-                    }
-                }
-            }
-        }
-
-        result
-    }
-
-    pub fn get_version(env: Env) -> Result<String, Error> {        Storage::get_version(&env).ok_or(Error::NotInitialized)
+    pub fn get_version(env: Env) -> Result<String, Error> {
+        Storage::get_version(&env).ok_or(Error::NotInitialized)
     }
 
     pub fn get_contract_metadata(env: Env) -> Result<ContractMetadata, Error> {

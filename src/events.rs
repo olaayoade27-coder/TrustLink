@@ -164,11 +164,16 @@ impl Events {
         );
     }
 
-    /// Emitted when a new attestation template is created by an issuer.
-    pub fn template_created(env: &Env, issuer: &Address, template_id: &String) {
+    /// Emitted when a registered issuer endorses an existing attestation.
+    pub fn attestation_endorsed(
+        env: &Env,
+        attestation_id: &String,
+        endorser: &Address,
+        timestamp: u64,
+    ) {
         env.events().publish(
-            (symbol_short!("tmpl_crt"), issuer.clone()),
-            template_id.clone(),
+            (symbol_short!("endorsed"), endorser.clone()),
+            (attestation_id.clone(), timestamp),
         );
     }
 }
