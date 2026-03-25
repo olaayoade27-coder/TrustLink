@@ -37,7 +37,7 @@ fn setup(env: &Env) -> (Address, Address, TrustLinkContractClient<'_>) {
     let admin = Address::generate(env);
     let issuer = Address::generate(env);
     client.initialize(&admin, &None);
-    client.register_issuer(&admin, &issuer);
+    client.register_issuer(&admin, &issuer, &None);
     (admin, issuer, client)
 }
 
@@ -779,9 +779,9 @@ fn setup_multisig(
     let issuer2 = Address::generate(env);
     let issuer3 = Address::generate(env);
     client.initialize(&admin, &None);
-    client.register_issuer(&admin, &issuer1);
-    client.register_issuer(&admin, &issuer2);
-    client.register_issuer(&admin, &issuer3);
+    client.register_issuer(&admin, &issuer1, &None);
+    client.register_issuer(&admin, &issuer2, &None);
+    client.register_issuer(&admin, &issuer3, &None);
     (issuer1, issuer2, issuer3, admin, client)
 }
 
@@ -847,7 +847,7 @@ fn test_multisig_non_required_signer_rejected() {
 
     let (issuer1, issuer2, issuer3, admin, client) = setup_multisig(&env);
     let outsider = Address::generate(&env);
-    client.register_issuer(&admin, &outsider);
+    client.register_issuer(&admin, &outsider, &None);
 
     let subject = Address::generate(&env);
     let claim_type = String::from_str(&env, "ACCREDITED_INVESTOR");
@@ -1006,4 +1006,113 @@ fn test_multisig_unregistered_proposer_rejected() {
     let result =
         client.try_propose_attestation(&unregistered, &subject, &claim_type, &required, &2);
     assert_eq!(result, Err(Ok(types::Error::Unauthorized)));
+}
+
+// ── Attestation proof tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_get_attestation_proof_returns_correct_attestation_data() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+
+    let proof = client.get_attestation_proof(&id);
+
+    assert_eq!(proof.attestation.id, id);
+    assert_eq!(proof.attestation.issuer, issuer);
+    assert_eq!(proof.attestation.subject, subject);
+    assert_eq!(proof.attestation.claim_type, claim_type);
+    assert_eq!(proof.attestation.timestamp, 1_000);
+    assert!(!proof.attestation.revoked);
+}
+
+#[test]
+fn test_get_attestation_proof_includes_ledger_context() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 42;
+        li.timestamp = 5_000;
+    });
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+
+    let proof = client.get_attestation_proof(&id);
+
+    assert_eq!(proof.ledger_sequence, 42);
+    assert_eq!(proof.ledger_timestamp, 5_000);
+    // ledger_hash is a 32-byte hex string (64 chars)
+    assert_eq!(proof.ledger_hash.len(), 64);
+}
+
+#[test]
+fn test_get_attestation_proof_not_found_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, client) = setup(&env);
+    let missing_id = String::from_str(&env, "nonexistent_id");
+
+    let result = client.try_get_attestation_proof(&missing_id);
+    assert_eq!(result, Err(Ok(types::Error::NotFound)));
+}
+
+#[test]
+fn test_get_attestation_proof_ledger_hash_is_deterministic() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 100;
+        li.timestamp = 9_000;
+    });
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+
+    let proof1 = client.get_attestation_proof(&id);
+    let proof2 = client.get_attestation_proof(&id);
+
+    // Same ledger state → same hash
+    assert_eq!(proof1.ledger_hash, proof2.ledger_hash);
+}
+
+#[test]
+fn test_get_attestation_proof_hash_changes_with_ledger() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 10;
+        li.timestamp = 1_000;
+    });
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+
+    let proof_early = client.get_attestation_proof(&id);
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 20;
+        li.timestamp = 2_000;
+    });
+    let proof_later = client.get_attestation_proof(&id);
+
+    // Different ledger state → different hash
+    assert_ne!(proof_early.ledger_hash, proof_later.ledger_hash);
+    assert_ne!(proof_early.ledger_sequence, proof_later.ledger_sequence);
 }

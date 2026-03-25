@@ -70,6 +70,45 @@ pub enum AttestationStatus {
     Pending,
 }
 
+/// Trust tier assigned to a registered issuer.
+///
+/// Consumers can filter attestations by minimum tier using
+/// `has_valid_claim_from_tier`. Tiers are ordered: Bronze < Silver < Gold.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IssuerTier {
+    Bronze,
+    Silver,
+    Gold,
+}
+
+impl IssuerTier {
+    /// Returns a numeric rank so tiers can be compared ordinally.
+    pub fn rank(&self) -> u32 {
+        match self {
+            IssuerTier::Bronze => 1,
+            IssuerTier::Silver => 2,
+            IssuerTier::Gold => 3,
+        }
+    }
+}
+
+/// Registered callback for expiration notifications.
+///
+/// When a subject's attestation enters the notification window
+/// (`expiration - notify_days_before * 86400 <= current_time < expiration`),
+/// TrustLink calls `notify_expiring` on `callback_contract`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpirationHook {
+    /// The subject whose attestations are monitored.
+    pub subject: Address,
+    /// Contract to call when an attestation is near expiry.
+    pub callback_contract: Address,
+    /// How many days before expiration to trigger the notification.
+    pub notify_days_before: u32,
+}
+
 /// A multi-sig attestation proposal that becomes active once `threshold` issuers have co-signed.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -125,6 +164,37 @@ pub enum Error {
     ProposalFinalized = 19,
     /// The proposal has expired without reaching threshold.
     ProposalExpired = 20,
+}
+
+/// A cryptographic proof that an attestation existed at a specific ledger sequence.
+///
+/// ## Verification
+///
+/// To verify this proof against Stellar ledger history:
+///
+/// 1. Fetch the ledger header for `ledger_sequence` from a Stellar Horizon node:
+///    `GET /ledgers/{ledger_sequence}`
+/// 2. Confirm the returned `hash` field matches `ledger_hash` in this struct.
+/// 3. Confirm the returned `closed_at` Unix timestamp matches `ledger_timestamp`.
+/// 4. Recompute the attestation ID from `attestation.issuer`, `attestation.subject`,
+///    `attestation.claim_type`, and `attestation.timestamp` using the same SHA-256
+///    hashing scheme used by `Attestation::generate_id`.
+/// 5. Confirm the recomputed ID matches `attestation.id`.
+///
+/// A proof is considered valid when all three checks pass, establishing that the
+/// attestation was stored on-chain no later than `ledger_sequence`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttestationProof {
+    /// The full attestation record at the time the proof was generated.
+    pub attestation: Attestation,
+    /// The Stellar ledger sequence number at which the proof was captured.
+    pub ledger_sequence: u32,
+    /// The ledger close timestamp (Unix seconds) for `ledger_sequence`.
+    pub ledger_timestamp: u64,
+    /// The SHA-256 hash of the ledger header, hex-encoded (32 bytes → 64 hex chars).
+    /// Use this to cross-reference against Stellar Horizon or a Stellar Core node.
+    pub ledger_hash: String,
 }
 
 impl Attestation {
