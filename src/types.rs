@@ -131,12 +131,13 @@ pub enum Error {
 }
 
 impl Attestation {
+    /// Hash `payload` with SHA-256 and return the result as a 64-char hex [`String`].
     pub fn hash_payload(env: &Env, payload: &Bytes) -> String {
         let hash = env.crypto().sha256(payload).to_array();
         const HEX: &[u8; 16] = b"0123456789abcdef";
 
-        let mut hex = [0u8; 32];
-        for i in 0..16 {
+        let mut hex = [0u8; 64];
+        for i in 0..32 {
             hex[i * 2] = HEX[(hash[i] >> 4) as usize];
             hex[i * 2 + 1] = HEX[(hash[i] & 0x0f) as usize];
         }
@@ -144,6 +145,7 @@ impl Attestation {
         String::from_bytes(env, &hex)
     }
 
+    /// Generate a deterministic attestation ID from issuer + subject + claim_type + timestamp.
     pub fn generate_id(
         env: &Env,
         issuer: &Address,
@@ -159,6 +161,7 @@ impl Attestation {
         Self::hash_payload(env, &payload)
     }
 
+    /// Generate a deterministic bridge attestation ID.
     pub fn generate_bridge_id(
         env: &Env,
         bridge: &Address,
