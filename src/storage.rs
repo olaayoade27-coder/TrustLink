@@ -7,7 +7,7 @@
 //!
 //! | Tier         | Keys stored                          | TTL policy                        |
 //! |--------------|--------------------------------------|-----------------------------------|
-//! | Instance     | `Admin`, `Version`, `FeeConfig`      | Refreshed to 30 days on each write|
+//! | Instance     | `Admin`, `Version`, `FeeConfig`, `GlobalStats` | Refreshed to 30 days on each write|
 //! | Persistent   | Everything else (see [`StorageKey`]) | Refreshed to 30 days on each write|
 //!
 //! ## Key layout (`StorageKey`)
@@ -26,8 +26,9 @@
 //! - `ClaimTypeList` — ordered `Vec<String>` of all registered claim type IDs;
 //!   used for pagination via `list_claim_types`.
 //! - `FeeConfig` — global attestation fee settings.
+//! - `GlobalStats` — running counters for total attestations, revocations, and issuers.
 
-use crate::types::{Attestation, ClaimTypeInfo, Error, FeeConfig, IssuerMetadata, MultiSigProposal, TtlConfig};
+use crate::types::{Attestation, ClaimTypeInfo, Endorsement, Error, FeeConfig, GlobalStats, IssuerMetadata, MultiSigProposal, TtlConfig};
 use soroban_sdk::{contracttype, Address, Env, String, Vec};
 
 /// Keys used to address data in contract storage.
@@ -59,6 +60,10 @@ pub enum StorageKey {
     ClaimTypeList,
     /// A multi-sig attestation proposal keyed by its ID.
     MultiSigProposal(String),
+    /// Ordered list of endorsements for an attestation, keyed by attestation ID.
+    Endorsements(String),
+    /// Global contract statistics (total attestations, revocations, issuers).
+    GlobalStats,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -132,6 +137,11 @@ impl Storage {
         env.storage().instance().get(&StorageKey::FeeConfig)
     }
 
+    /// Retrieve the current TTL configuration.
+    pub fn get_ttl_config(env: &Env) -> Option<TtlConfig> {
+        env.storage().instance().get(&StorageKey::TtlConfig)
+    }
+
     /// Retrieve the admin address.
     ///
     /// # Errors
@@ -197,22 +207,44 @@ impl Storage {
 
     /// Retrieve an attestation by `id`.
     ///
+    /// Extends the entry's TTL on every successful read so that frequently
+    /// accessed attestations are not evicted while still in active use.
+    /// The threshold and extension amount match the write-path constants,
+    /// meaning a read is never more expensive than a write in terms of
+    /// storage rent.
+    ///
     /// # Errors
     /// - [`Error::NotFound`] — no attestation with that ID exists.
     pub fn get_attestation(env: &Env, id: &String) -> Result<Attestation, Error> {
-        env.storage()
+        let key = StorageKey::Attestation(id.clone());
+        let attestation = env
+            .storage()
             .persistent()
-            .get(&StorageKey::Attestation(id.clone()))
-            .ok_or(Error::NotFound)
+            .get(&key)
+            .ok_or(Error::NotFound)?;
+        // Extend TTL on read so hot attestations stay alive without a write.
+        let ttl = get_ttl_lifetime(env);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
+        Ok(attestation)
     }
 
     /// Return the ordered list of attestation IDs for `subject`, or an empty
     /// [`Vec`] if none exist.
+    ///
+    /// Extends the index TTL on read using the same threshold and amount as
+    /// write operations — no additional storage cost beyond what a write incurs.
     pub fn get_subject_attestations(env: &Env, subject: &Address) -> Vec<String> {
-        env.storage()
+        let key = StorageKey::SubjectAttestations(subject.clone());
+        let list = env
+            .storage()
             .persistent()
-            .get(&StorageKey::SubjectAttestations(subject.clone()))
-            .unwrap_or(Vec::new(env))
+            .get(&key)
+            .unwrap_or(Vec::new(env));
+        if env.storage().persistent().has(&key) {
+            let ttl = get_ttl_lifetime(env);
+            env.storage().persistent().extend_ttl(&key, ttl, ttl);
+        }
+        list
     }
 
     /// Append `attestation_id` to `subject`'s attestation index and refresh TTL.
@@ -227,11 +259,21 @@ impl Storage {
 
     /// Return the ordered list of attestation IDs created by `issuer`, or an
     /// empty [`Vec`] if none exist.
+    ///
+    /// Extends the index TTL on read using the same threshold and amount as
+    /// write operations — no additional storage cost beyond what a write incurs.
     pub fn get_issuer_attestations(env: &Env, issuer: &Address) -> Vec<String> {
-        env.storage()
+        let key = StorageKey::IssuerAttestations(issuer.clone());
+        let list = env
+            .storage()
             .persistent()
-            .get(&StorageKey::IssuerAttestations(issuer.clone()))
-            .unwrap_or(Vec::new(env))
+            .get(&key)
+            .unwrap_or(Vec::new(env));
+        if env.storage().persistent().has(&key) {
+            let ttl = get_ttl_lifetime(env);
+            env.storage().persistent().extend_ttl(&key, ttl, ttl);
+        }
+        list
     }
 
     /// Append `attestation_id` to `issuer`'s attestation index and refresh TTL.
@@ -320,5 +362,73 @@ impl Storage {
         env.storage()
             .persistent()
             .has(&StorageKey::MultiSigProposal(id.clone()))
+    }
+
+    /// Return the ordered list of endorsements for `attestation_id`, or an empty
+    /// [`Vec`] if none exist.
+    pub fn get_endorsements(env: &Env, attestation_id: &String) -> Vec<Endorsement> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::Endorsements(attestation_id.clone()))
+            .unwrap_or(Vec::new(env))
+    }
+
+    /// Append `endorsement` to the endorsement list for its attestation and refresh TTL.
+    pub fn add_endorsement(env: &Env, endorsement: &Endorsement) {
+        let key = StorageKey::Endorsements(endorsement.attestation_id.clone());
+        let ttl = get_ttl_lifetime(env);
+        let mut endorsements = Self::get_endorsements(env, &endorsement.attestation_id);
+        endorsements.push_back(endorsement.clone());
+        env.storage().persistent().set(&key, &endorsements);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
+    }
+
+    /// Retrieve the global contract statistics, returning zeroed defaults if not yet set.
+    pub fn get_global_stats(env: &Env) -> GlobalStats {
+        env.storage()
+            .instance()
+            .get(&StorageKey::GlobalStats)
+            .unwrap_or(GlobalStats {
+                total_attestations: 0,
+                total_revocations: 0,
+                total_issuers: 0,
+            })
+    }
+
+    /// Persist updated global stats to instance storage and refresh TTL.
+    fn set_global_stats(env: &Env, stats: &GlobalStats) {
+        let ttl = get_ttl_lifetime(env);
+        env.storage()
+            .instance()
+            .set(&StorageKey::GlobalStats, stats);
+        env.storage().instance().extend_ttl(ttl, ttl);
+    }
+
+    /// Increment `total_attestations` by `count`.
+    pub fn increment_total_attestations(env: &Env, count: u64) {
+        let mut stats = Self::get_global_stats(env);
+        stats.total_attestations += count;
+        Self::set_global_stats(env, &stats);
+    }
+
+    /// Increment `total_revocations` by `count`.
+    pub fn increment_total_revocations(env: &Env, count: u64) {
+        let mut stats = Self::get_global_stats(env);
+        stats.total_revocations += count;
+        Self::set_global_stats(env, &stats);
+    }
+
+    /// Increment `total_issuers` by 1 when a new issuer is registered.
+    pub fn increment_total_issuers(env: &Env) {
+        let mut stats = Self::get_global_stats(env);
+        stats.total_issuers += 1;
+        Self::set_global_stats(env, &stats);
+    }
+
+    /// Decrement `total_issuers` by 1 when an issuer is removed (saturating at 0).
+    pub fn decrement_total_issuers(env: &Env) {
+        let mut stats = Self::get_global_stats(env);
+        stats.total_issuers = stats.total_issuers.saturating_sub(1);
+        Self::set_global_stats(env, &stats);
     }
 }

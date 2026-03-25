@@ -1,4 +1,8 @@
 //! Shared data types and error definitions for TrustLink.
+//!
+//! Defines [`Attestation`], [`AttestationStatus`], [`Error`], and supporting
+//! structs used throughout the contract. All types are annotated with
+//! `#[contracttype]` or `#[contracterror]` for Soroban ABI compatibility.
 
 use soroban_sdk::{contracterror, contracttype, xdr::ToXdr, Address, Bytes, Env, String, Vec};
 
@@ -42,6 +46,20 @@ pub struct TtlConfig {
     pub ttl_days: u32,
 }
 
+/// Global contract statistics for dashboards and analytics.
+///
+/// Maintained atomically on every mutating operation and queryable without auth.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GlobalStats {
+    /// Total number of attestations ever created (includes imported, bridged, and multi-sig).
+    pub total_attestations: u64,
+    /// Total number of attestations that have been revoked.
+    pub total_revocations: u64,
+    /// Current number of registered issuers (incremented on register, decremented on remove).
+    pub total_issuers: u64,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Attestation {
@@ -69,6 +87,18 @@ pub enum AttestationStatus {
     Expired,
     Revoked,
     Pending,
+}
+
+/// A social-proof endorsement of an existing attestation by a registered issuer.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Endorsement {
+    /// The ID of the attestation being endorsed.
+    pub attestation_id: String,
+    /// The issuer who is endorsing the attestation.
+    pub endorser: Address,
+    /// Ledger timestamp when the endorsement was recorded.
+    pub timestamp: u64,
 }
 
 /// A multi-sig attestation proposal that becomes active once `threshold` issuers have co-signed.
@@ -102,6 +132,7 @@ pub struct MultiSigProposal {
 pub enum Error {
     AlreadyInitialized = 1,
     NotInitialized = 2,
+    /// Caller lacks required permissions. Includes rejection when `issuer` equals `subject` in `create_attestation`.
     Unauthorized = 3,
     NotFound = 4,
     DuplicateAttestation = 5,
@@ -130,12 +161,13 @@ pub enum Error {
 }
 
 impl Attestation {
+    /// Hash `payload` with SHA-256 and return the result as a 64-char hex [`String`].
     pub fn hash_payload(env: &Env, payload: &Bytes) -> String {
         let hash = env.crypto().sha256(payload).to_array();
         const HEX: &[u8; 16] = b"0123456789abcdef";
 
-        let mut hex = [0u8; 32];
-        for i in 0..16 {
+        let mut hex = [0u8; 64];
+        for i in 0..32 {
             hex[i * 2] = HEX[(hash[i] >> 4) as usize];
             hex[i * 2 + 1] = HEX[(hash[i] & 0x0f) as usize];
         }
@@ -143,6 +175,7 @@ impl Attestation {
         String::from_bytes(env, &hex)
     }
 
+    /// Generate a deterministic attestation ID from issuer + subject + claim_type + timestamp.
     pub fn generate_id(
         env: &Env,
         issuer: &Address,
@@ -158,6 +191,7 @@ impl Attestation {
         Self::hash_payload(env, &payload)
     }
 
+    /// Generate a deterministic bridge attestation ID.
     pub fn generate_bridge_id(
         env: &Env,
         bridge: &Address,

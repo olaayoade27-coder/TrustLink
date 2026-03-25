@@ -151,6 +151,10 @@ let page1 = contract.list_claim_types(&0, &10);
 
 ### Create Attestations
 
+Issuers cannot create an attestation where they are also the subject (`issuer ==
+subject`); that would allow trivial self-certification. The contract returns
+`Unauthorized` in that case.
+
 If fees are enabled, the issuer must hold enough of the configured token for
 the transfer to succeed.
 
@@ -317,6 +321,49 @@ if fully_verified {
 contract.revoke_attestation(&issuer, &attestation_id);
 ```
 
+### Expiration Hooks
+
+Subjects can register a callback contract to be notified when one of their attestations is approaching expiry. This lets wallets, dApps, or automation contracts react before a credential lapses.
+
+**Flow:**
+1. Subject calls `register_expiration_hook` with their callback contract address and how many days before expiry they want to be notified.
+2. Whenever `has_valid_claim` is called and a matching attestation is inside the notification window, TrustLink emits an `exp_hook` event and calls `notify_expiring` on the callback contract.
+3. If the callback call fails for any reason, the failure is silently swallowed — the main `has_valid_claim` result is unaffected.
+4. Subject can overwrite or remove their hook at any time.
+
+**Callback interface** — your contract must implement:
+```rust
+fn notify_expiring(env: Env, subject: Address, attestation_id: String, expiration: u64);
+```
+
+**Usage:**
+```rust
+// Register: notify me 7 days before any attestation expires
+contract.register_expiration_hook(
+    &subject,
+    &my_callback_contract,
+    &7,
+);
+
+// Retrieve the current hook
+let hook = contract.get_expiration_hook(&subject);
+
+// Remove the hook
+contract.remove_expiration_hook(&subject);
+```
+
+**Event emitted when hook fires:**
+```
+topics: ["exp_hook", subject_address]
+data:   (attestation_id, expiration_timestamp)
+```
+
+**Notes:**
+- Only the subject can register or remove their own hook (requires auth).
+- Attestations without an expiration never trigger the hook.
+- A subject can only have one hook at a time; re-registering overwrites the previous one.
+- Failed callback calls do not revert or affect the caller.
+
 ### Multi-Sig Attestations
 
 High-value claims (e.g. `ACCREDITED_INVESTOR`) can require M-of-N registered issuers to co-sign before the attestation becomes active. This prevents a single compromised issuer from unilaterally issuing sensitive credentials.
@@ -397,6 +444,34 @@ let attestations = contract.get_subject_attestations(&user_address, &0, &10);
 // List issuer's attestations
 let issued = contract.get_issuer_attestations(&issuer_address, &0, &10);
 ```
+
+## Global Statistics
+
+`get_global_stats(env: Env) -> GlobalStats` returns a snapshot of contract-wide counters. No authentication is required — it is safe to call from dashboards, analytics tools, and indexers.
+
+```rust
+let stats = contract.get_global_stats();
+// stats.total_attestations — all attestations ever created (native, imported, bridged, multi-sig)
+// stats.total_revocations  — all revocations ever performed (single + batch)
+// stats.total_issuers      — current number of registered issuers
+```
+
+**`GlobalStats` fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `total_attestations` | `u64` | Cumulative count of all attestations created |
+| `total_revocations` | `u64` | Cumulative count of all revocations |
+| `total_issuers` | `u64` | Current registered issuer count (live, not cumulative) |
+
+Stats are updated atomically on every mutating operation:
+- `register_issuer` → increments `total_issuers`
+- `remove_issuer` → decrements `total_issuers` (saturating at 0)
+- `create_attestation`, `import_attestation`, `bridge_attestation` → each increments `total_attestations` by 1
+- `create_attestations_batch` → increments `total_attestations` by the number of subjects
+- `cosign_attestation` (on threshold reached) → increments `total_attestations` by 1
+- `revoke_attestation` → increments `total_revocations` by 1
+- `revoke_attestations_batch` → increments `total_revocations` by the number revoked
 
 ## Integration Example
 
@@ -619,6 +694,19 @@ For a step-by-step walkthrough covering Rust cross-contract patterns, JavaScript
 ## Storage Layout
 
 For a full reference of every on-chain storage key, the data each holds, TTL policy, serialization format, and a practical RPC read example for indexer developers, see [docs/storage-layout.md](docs/storage-layout.md).
+
+## Architecture Decision Records
+
+Key design choices are documented as ADRs in [docs/adr/](docs/adr/):
+
+| ADR | Decision |
+|-----|----------|
+| [ADR-001](docs/adr/ADR-001-deterministic-ids.md) | Deterministic IDs instead of sequential counters |
+| [ADR-002](docs/adr/ADR-002-persistent-storage.md) | Persistent storage instead of temporary storage |
+| [ADR-003](docs/adr/ADR-003-immutable-history.md) | Immutable attestation history (no delete) |
+| [ADR-004](docs/adr/ADR-004-dual-indexes.md) | Separate issuer and subject indexes |
+
+A blank [template](docs/adr/ADR-000-template.md) is available for new decisions.
 
 ## License
 
