@@ -1,4 +1,8 @@
 //! Shared data types and error definitions for TrustLink.
+//!
+//! Defines [`Attestation`], [`AttestationStatus`], [`Error`], and supporting
+//! structs used throughout the contract. All types are annotated with
+//! `#[contracttype]` or `#[contracterror]` for Soroban ABI compatibility.
 
 use soroban_sdk::{contracterror, contracttype, xdr::ToXdr, Address, Bytes, Env, String, Vec};
 
